@@ -1,0 +1,2020 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+<meta name="theme-color" content="#05060A" />
+<title>FitTrack · Regista os teus treinos</title>
+
+<!-- PWA: instalável no telemóvel (Android/Chrome e iOS/Safari) -->
+<link rel="manifest" href="./manifest.json" />
+<link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png" />
+<link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="FitTrack" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.28.5/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.111.0/dist/umd/supabase.js"></script>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: {
+      extend: {
+        fontFamily: {
+          display: ['Sora', 'sans-serif'],
+          sans: ['Inter', 'sans-serif'],
+          mono: ['"JetBrains Mono"', 'monospace'],
+        },
+      },
+    },
+  }
+</script>
+
+<style>
+  html, body { background:#05060A; }
+  body { font-family: 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; overscroll-behavior-y: none; }
+  ::-webkit-scrollbar { display:none; }
+  * { scrollbar-width:none; }
+
+  :focus-visible { outline: 2px solid #60A5FA; outline-offset: 2px; border-radius: 4px; }
+
+  @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+  @keyframes fadeIn { from { opacity:0; } to { opacity:1; } }
+  @keyframes riseIn { from { opacity:0; transform: translateY(10px);} to { opacity:1; transform: translateY(0);} }
+  @keyframes toastIn { from { opacity:0; transform: translate(-50%, 12px);} to { opacity:1; transform: translate(-50%, 0);} }
+  @keyframes pulseGlow { 0%,100% { opacity:.55; } 50% { opacity:1; } }
+
+  .anim-slideup { animation: slideUp .32s cubic-bezier(.22,.9,.32,1) both; }
+  .anim-fadein { animation: fadeIn .2s ease both; }
+  .anim-risein { animation: riseIn .38s cubic-bezier(.22,.9,.32,1) both; }
+  .anim-toast { animation: toastIn .28s cubic-bezier(.22,.9,.32,1) both; }
+  .anim-glow { animation: pulseGlow 3.5s ease-in-out infinite; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
+
+  .ring-progress { transition: stroke-dashoffset 1s cubic-bezier(.22,.9,.32,1); }
+</style>
+</head>
+<body class="bg-[#05060A]">
+
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+const { createPortal } = ReactDOM;
+
+/* ---------------------------------------------------------------- */
+/* Configuração da base de dados (Supabase)                          */
+/* ------------------------------------------------------------------
+   1. Cria uma conta grátis em https://supabase.com
+   2. Cria um novo projeto (demora ~2 min a ficar pronto)
+   3. Vai a Project Settings → API e copia:
+        - "Project URL"     → cola abaixo em SUPABASE_URL
+        - "anon public" key → cola abaixo em SUPABASE_ANON_KEY
+   4. No SQL Editor do projeto, corre o script supabase-setup.sql
+      (fornecido junto com este ficheiro) para criar as tabelas.
+   5. Se deixares os campos vazios, a app continua a funcionar,
+      mas os dados ficam guardados só neste aparelho/navegador.
+   ------------------------------------------------------------------ */
+const SUPABASE_URL = '';
+const SUPABASE_ANON_KEY = '';
+
+const supabaseConfigured = /^https?:\/\//.test(SUPABASE_URL) && SUPABASE_ANON_KEY.length > 20;
+const sb = supabaseConfigured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+/* ---------------------------------------------------------------- */
+/* Constants & helpers                                               */
+/* ---------------------------------------------------------------- */
+
+const STORAGE_KEY = 'fittrack_workouts_v1';
+const CALORIE_KEY = 'fittrack_calories_v1';
+const SUPPLEMENT_KEY = 'fittrack_supplements_v1';
+const GUEST_KEY = 'fittrack_guest_v1';
+const WEEKLY_GOAL = 4;
+
+const SPORTS = {
+  running: { key: 'running', label: 'Corrida', from: '#22D3EE', to: '#3B82F6', soft: 'rgba(59,130,246,0.14)', text: '#5AC8FA' },
+  cycling: { key: 'cycling', label: 'Ciclismo', from: '#C084FC', to: '#7C3AED', soft: 'rgba(124,58,237,0.16)', text: '#C084FC' },
+  gym:     { key: 'gym',     label: 'Ginásio',  from: '#4ADE80', to: '#10B981', soft: 'rgba(16,185,129,0.16)', text: '#4ADE80' },
+};
+
+const MUSCLE_GROUPS = [
+  { key: 'peito',   label: 'Peito' },
+  { key: 'costas',  label: 'Costas' },
+  { key: 'biceps',  label: 'Bíceps' },
+  { key: 'triceps', label: 'Tríceps' },
+  { key: 'pernas',  label: 'Pernas' },
+  { key: 'ombros',  label: 'Ombros' },
+  { key: 'abdomen', label: 'Abdómen' },
+];
+
+function uid() { return 'w_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
+function pad(n) { return n.toString().padStart(2, '0'); }
+
+function loadLocal(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {
+    console.warn('FitTrack: localStorage indisponível nesta pré-visualização — a usar memória temporária.', e);
+  }
+  return null;
+}
+
+function persistLocal(key, data) {
+  try { localStorage.setItem(key, JSON.stringify(data)); }
+  catch (e) { /* silencioso — ver aviso no arranque */ }
+}
+
+function resizeImageFile(file, maxDim = 480, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Não foi possível ler a imagem.'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('Ficheiro de imagem inválido.'));
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > height && width > maxDim) { height = Math.round(height * (maxDim / width)); width = maxDim; }
+        else if (height >= width && height > maxDim) { width = Math.round(width * (maxDim / height)); height = maxDim; }
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function seedWorkouts() {
+  const now = new Date();
+  const daysAgo = (n) => { const d = new Date(now); d.setDate(d.getDate() - n); d.setHours(18, 30, 0, 0); return d.toISOString(); };
+  return [
+    { id: uid(), type: 'running', date: daysAgo(1), duration: 32, distance: 5.2, muscleGroups: [], exercises: [], elevationGain: null, notes: 'Ritmo constante, boas sensações nos últimos 2km.' },
+    { id: uid(), type: 'gym', date: daysAgo(2), duration: 55, distance: null, muscleGroups: ['peito', 'triceps', 'ombros'],
+      exercises: [
+        { id: uid(), name: 'Supino reto', sets: 4, reps: 8, weight: 60 },
+        { id: uid(), name: 'Press militar', sets: 3, reps: 10, weight: 30 },
+        { id: uid(), name: 'Fundos em paralelas', sets: 3, reps: 12, weight: 0 },
+      ], elevationGain: null, notes: 'Boa sessão, aumentei a carga no supino.' },
+    { id: uid(), type: 'cycling', date: daysAgo(4), duration: 68, distance: 24.5, muscleGroups: [], exercises: [], elevationGain: 320, notes: 'Rota do rio — vento contra na volta.' },
+  ];
+}
+
+function formatDuration(totalMinutes) {
+  const totalSeconds = Math.round(totalMinutes * 60);
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  if (h > 0) return `${h}h ${pad(m)}min`;
+  if (m > 0) return s > 0 ? `${m}min ${pad(s)}s` : `${m} min`;
+  return `${s}s`;
+}
+
+function formatDateLabel(iso) {
+  const d = new Date(iso);
+  const startOfDay = (dt) => new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+  const diffDays = Math.round((startOfDay(new Date()) - startOfDay(d)) / 86400000);
+  if (diffDays === 0) return 'Hoje';
+  if (diffDays === 1) return 'Ontem';
+  if (diffDays > 1 && diffDays < 7) return `Há ${diffDays} dias`;
+  return d.toLocaleDateString('pt-PT', { day: '2-digit', month: 'short' });
+}
+
+function formatFullDate(iso) {
+  return new Date(iso).toLocaleDateString('pt-PT', { weekday: 'long', day: '2-digit', month: 'long' });
+}
+
+function formatTime(iso) {
+  return new Date(iso).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' });
+}
+
+function isToday(iso) {
+  return new Date(iso).toDateString() === new Date().toDateString();
+}
+
+function groupByDay(items) {
+  const map = new Map();
+  items.forEach((it) => {
+    const key = formatFullDate(it.date);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(it);
+  });
+  return Array.from(map.entries());
+}
+
+function formatPace(distanceKm, durationMin) {
+  if (!distanceKm || !durationMin) return null;
+  const paceMinPerKm = durationMin / distanceKm;
+  const min = Math.floor(paceMinPerKm);
+  const sec = Math.round((paceMinPerKm - min) * 60);
+  return `${min}:${pad(sec)} /km`;
+}
+
+function formatSpeed(distanceKm, durationMin) {
+  if (!distanceKm || !durationMin) return null;
+  return `${(distanceKm / (durationMin / 60)).toFixed(1)} km/h`;
+}
+
+function getWeekStart(d) {
+  const date = new Date(d);
+  const day = date.getDay();
+  const diff = (day === 0 ? -6 : 1) - day;
+  date.setDate(date.getDate() + diff);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+function computeWeeklyCount(workouts) {
+  const start = getWeekStart(new Date());
+  return workouts.filter((w) => new Date(w.date) >= start).length;
+}
+
+function computeStreak(workouts) {
+  if (workouts.length === 0) return 0;
+  const daySet = new Set(workouts.map((w) => new Date(w.date).toDateString()));
+  let cursor = new Date();
+  if (!daySet.has(cursor.toDateString())) {
+    cursor.setDate(cursor.getDate() - 1);
+    if (!daySet.has(cursor.toDateString())) return 0;
+  }
+  let streak = 0;
+  while (daySet.has(cursor.toDateString())) {
+    streak++;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return streak;
+}
+
+function computeTotalDistance(workouts) {
+  return workouts.reduce((sum, w) => sum + (w.distance || 0), 0);
+}
+
+function greeting() {
+  const h = new Date().getHours();
+  if (h < 5) return 'Boa noite';
+  if (h < 12) return 'Bom dia';
+  if (h < 19) return 'Boa tarde';
+  return 'Boa noite';
+}
+
+/* ---------------------------------------------------------------- */
+/* Camada de dados — Supabase (com fallback local automático)        */
+/* ---------------------------------------------------------------- */
+
+function workoutToRow(w, userId) {
+  return { id: w.id, user_id: userId, type: w.type, date: w.date, duration: w.duration, distance: w.distance ?? null, muscle_groups: w.muscleGroups || [], exercises: w.exercises || [], elevation_gain: w.elevationGain ?? null, photo_url: w.photo || null, notes: w.notes || '' };
+}
+function rowToWorkout(r) {
+  return { id: r.id, type: r.type, date: r.date, duration: r.duration, distance: r.distance, muscleGroups: r.muscle_groups || [], exercises: r.exercises || [], elevationGain: r.elevation_gain, photo: r.photo_url || null, notes: r.notes || '' };
+}
+function calorieToRow(c, userId) {
+  return { id: c.id, user_id: userId, food: c.food, kcal_per_100g: c.kcalPer100g, grams: c.grams, total_kcal: c.totalKcal, date: c.date };
+}
+function rowToCalorie(r) {
+  return { id: r.id, food: r.food, kcalPer100g: r.kcal_per_100g, grams: r.grams, totalKcal: r.total_kcal, date: r.date };
+}
+function supplementToRow(s, userId) {
+  return { id: s.id, user_id: userId, type: s.type, date: s.date };
+}
+function rowToSupplement(r) {
+  return { id: r.id, type: r.type, date: r.date };
+}
+
+async function dbInsert(table, row) {
+  if (!sb) return { ok: true };
+  const { error } = await sb.from(table).insert(row);
+  return { ok: !error, error };
+}
+async function dbDelete(table, id) {
+  if (!sb) return { ok: true };
+  const { error } = await sb.from(table).delete().eq('id', id);
+  return { ok: !error, error };
+}
+async function dbSelectAll(table, userId) {
+  if (!sb) return { ok: true, data: [] };
+  const { data, error } = await sb.from(table).select('*').eq('user_id', userId).order('date', { ascending: false });
+  return { ok: !error, data: data || [], error };
+}
+
+async function dbUploadImage(bucket, path, dataUrl) {
+  if (!sb) return { ok: true, url: dataUrl };
+  try {
+    const blob = await (await fetch(dataUrl)).blob();
+    const { error } = await sb.storage.from(bucket).upload(path, blob, { upsert: true, contentType: 'image/jpeg' });
+    if (error) return { ok: false, error };
+    const { data } = sb.storage.from(bucket).getPublicUrl(path);
+    return { ok: true, url: data.publicUrl };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
+/* ---------------------------------------------------------------- */
+/* Icons (inline SVG, stroke-based)                                  */
+/* ---------------------------------------------------------------- */
+
+const Icon = ({ children, size = 22, className = '' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    {children}
+  </svg>
+);
+const HomeIcon = (p) => <Icon {...p}><path d="M3 11.5 12 4l9 7.5" /><path d="M5 10v9a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1v-9" /></Icon>;
+const HistoryIcon = (p) => <Icon {...p}><path d="M4 4v6h6" /><path d="M4.5 13a8.5 8.5 0 1 0 2-6.6L4 10" /><path d="M12 8v5l3 2" /></Icon>;
+const PlusIcon = (p) => <Icon {...p}><path d="M12 5v14M5 12h14" /></Icon>;
+const CloseIcon = (p) => <Icon {...p}><path d="M18 6 6 18M6 6l12 12" /></Icon>;
+const TrashIcon = (p) => <Icon {...p}><path d="M4 7h16" /><path d="M9 7V4h6v3" /><path d="M6 7l1 13h10l1-13" /><path d="M10 11v6M14 11v6" /></Icon>;
+const ChevronLeftIcon = (p) => <Icon {...p}><path d="m15 6-6 6 6 6" /></Icon>;
+const FlameIcon = (p) => <Icon {...p}><path d="M12 2c1 3-3 4-3 7.5A3.5 3.5 0 0 0 12 13a3.5 3.5 0 0 0 3-5c1.5 1.2 2 3 2 4.5A5 5 0 0 1 7 15c0-4 3-5 3-8.5C10 4.5 11 3 12 2Z" /></Icon>;
+const ClockIcon = (p) => <Icon {...p}><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></Icon>;
+const RouteIcon = (p) => <Icon {...p}><circle cx="6" cy="18" r="2.2" /><circle cx="18" cy="6" r="2.2" /><path d="M8 18h5a3 3 0 0 0 3-3v-1a3 3 0 0 1 3-3" /></Icon>;
+const CheckIcon = (p) => <Icon {...p}><path d="m5 13 4 4 10-10" /></Icon>;
+const CalendarIcon = (p) => <Icon {...p}><rect x="3.5" y="5" width="17" height="15.5" rx="2" /><path d="M8 3v4M16 3v4M3.5 10h17" /></Icon>;
+
+const RunningIcon = (p) => <Icon {...p}><path d="M3 16.6c0-1.05.85-1.9 1.9-1.9h1.75l2-3.1c.5-.8 1.38-1.3 2.32-1.3h5.5c1.7 0 3.24.98 3.96 2.52l.87 1.88h1.8c1 0 1.8.8 1.8 1.8v1.1c0 .85-.68 1.5-1.5 1.5H4.4c-.8 0-1.4-.6-1.4-1.4v-1.1Z" /><path d="M7 11.3V8.5" /><path d="M10.7 11 10 8.3" /></Icon>;
+const CyclingIcon = (p) => <Icon {...p}><circle cx="5.5" cy="17.3" r="3.2" /><circle cx="18.5" cy="17.3" r="3.2" /><path d="M5.5 17.3 9.3 10h3.4l3 7.3" /><path d="M9.3 10h3" /><path d="M15 6h2.4l1 4" /></Icon>;
+const DumbbellIcon = (p) => <Icon {...p}><path d="M4 9.5v5M2.5 10.7v2.6M19.5 9.5v5M21 10.7v2.6M7 8v8M17 8v8M7 12h10" /></Icon>;
+const FlagIcon = (p) => <Icon {...p}><path d="M6 21V4" /><path d="M6 4h11l-2.5 3.5L17 11H6" /></Icon>;
+const AppleIcon = (p) => <Icon {...p}><path d="M12 8.2c-3.3 0-5.5 2.6-5.5 6.1 0 3.8 2.7 6.8 4.6 6.8.9 0 1.3-.4 1.9-.4.6 0 1 .4 1.9.4 1.7 0 4.6-2.7 4.6-6.6 0-2.8-1.7-4.7-3.7-5-1 .1-1.7.6-2.8.6Z" /><path d="M12 8.2c0-1.8 1-3.2 2.5-3.7" /></Icon>;
+const CapsuleIcon = (p) => <Icon {...p}><rect x="3" y="9.5" width="18" height="5" rx="2.5" transform="rotate(-25 12 12)" /><line x1="12" y1="9.7" x2="12" y2="14.3" transform="rotate(-25 12 12)" /></Icon>;
+const ShakerIcon = (p) => <Icon {...p}><path d="M9 3h6l1.2 3-1.2 2v11a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2V8L8 5Z" /><path d="M7.7 10.5h8.6" /></Icon>;
+const MailIcon = (p) => <Icon {...p}><rect x="3" y="5.5" width="18" height="13" rx="2.5" /><path d="m4 7 8 6 8-6" /></Icon>;
+const UserIcon = (p) => <Icon {...p}><circle cx="12" cy="8.2" r="3.5" /><path d="M4.5 20a7.5 7.5 0 0 1 15 0" /></Icon>;
+const CameraIcon = (p) => <Icon {...p}><path d="M4 8h3l1.4-2h7.2L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z" /><circle cx="12" cy="13" r="3.4" /></Icon>;
+const GameControllerIcon = (p) => <Icon {...p}><rect x="2.5" y="8" width="19" height="9.5" rx="4.5" /><path d="M7.2 11v3.5M5.5 12.75h3.4" /><circle cx="15.2" cy="11.6" r="1" fill="currentColor" /><circle cx="17.5" cy="13.9" r="1" fill="currentColor" /></Icon>;
+
+function LifeDots({ lives, max = 3 }) {
+  return (
+    <div className="flex gap-1">
+      {Array.from({ length: max }).map((_, i) => (
+        <svg key={i} width="15" height="15" viewBox="0 0 24 24" fill={i < lives ? '#F87171' : '#242837'}>
+          <path d="M12 20.5s-7.2-4.4-9.7-8.9C.6 7.9 3 4.3 6.6 4.3c2 0 3.6 1.2 5.4 3.4 1.8-2.2 3.4-3.4 5.4-3.4 3.6 0 6 3.6 4.3 7.3-2.5 4.5-9.7 8.9-9.7 8.9Z" />
+        </svg>
+      ))}
+    </div>
+  );
+}
+const LockIcon = (p) => <Icon {...p}><rect x="5" y="10.5" width="14" height="9.5" rx="2" /><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" /></Icon>;
+const CloudIcon = (p) => <Icon {...p}><path d="M7.5 18a4.2 4.2 0 0 1 .5-8.4 5.3 5.3 0 0 1 10.1-1.4A4 4 0 0 1 17.5 18h-10Z" /></Icon>;
+const LogOutIcon = (p) => <Icon {...p}><path d="M9 21H5.5A1.5 1.5 0 0 1 4 19.5v-15A1.5 1.5 0 0 1 5.5 3H9" /><path d="M16 17l5-5-5-5" /><path d="M21 12H9" /></Icon>;
+const CheckCircleIcon = (p) => <Icon {...p}><circle cx="12" cy="12" r="9" /><path d="m8.5 12.5 2.3 2.3 4.7-5.1" /></Icon>;
+const MountainIcon = (p) => <Icon {...p}><path d="M3 19 9 8l4 6 2-3 6 8H3Z" /></Icon>;
+const DownloadIcon = (p) => <Icon {...p}><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M4 19h16" /></Icon>;
+
+function SportIcon({ type, size = 22 }) {
+  if (type === 'running') return <RunningIcon size={size} />;
+  if (type === 'cycling') return <CyclingIcon size={size} />;
+  if (type === 'gym') return <DumbbellIcon size={size} />;
+  return null;
+}
+
+/* ---------------------------------------------------------------- */
+/* Small presentational pieces                                       */
+/* ---------------------------------------------------------------- */
+
+function ActivityRing({ progress, size = 132, stroke = 12, count, goal }) {
+  const [animated, setAnimated] = useState(0);
+  useEffect(() => { const t = setTimeout(() => setAnimated(progress), 150); return () => clearTimeout(t); }, [progress]);
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (Math.min(animated, 100) / 100) * circumference;
+
+  return (
+    <div className="relative flex items-center justify-center" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="-rotate-90">
+        <defs>
+          <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#3B82F6" />
+            <stop offset="100%" stopColor="#A855F7" />
+          </linearGradient>
+        </defs>
+        <circle cx={size / 2} cy={size / 2} r={radius} stroke="#1A1D28" strokeWidth={stroke} fill="none" />
+        <circle cx={size / 2} cy={size / 2} r={radius} stroke="url(#ringGrad)" strokeWidth={stroke} fill="none"
+          strokeLinecap="round" strokeDasharray={circumference} strokeDashoffset={offset} className="ring-progress" />
+      </svg>
+      <div className="absolute flex flex-col items-center">
+        <span className="font-mono font-bold text-2xl text-[#F5F6FA] leading-none">{count}<span className="text-[#5C6178] text-base">/{goal}</span></span>
+        <span className="text-[11px] text-[#9298AC] mt-1 tracking-wide">esta semana</span>
+      </div>
+    </div>
+  );
+}
+
+function StatChip({ icon, value, label }) {
+  return (
+    <div className="bg-[#12141C] border border-white/5 rounded-2xl px-3 py-3 flex flex-col gap-1.5">
+      <div className="text-[#5C6178]">{icon}</div>
+      <span className="font-mono font-semibold text-lg text-[#F5F6FA] leading-none">{value}</span>
+      <span className="text-[11px] text-[#9298AC]">{label}</span>
+    </div>
+  );
+}
+
+function SportBadge({ type, size = 'md' }) {
+  const s = SPORTS[type];
+  const dim = size === 'sm' ? 'w-9 h-9' : 'w-12 h-12';
+  const iconSize = size === 'sm' ? 17 : 22;
+  return (
+    <div className={`${dim} rounded-2xl flex items-center justify-center shrink-0 text-white`}
+      style={{ background: `linear-gradient(135deg, ${s.from}, ${s.to})` }}>
+      <SportIcon type={type} size={iconSize} />
+    </div>
+  );
+}
+
+function WorkoutCard({ workout, onDelete, style }) {
+  const s = SPORTS[workout.type];
+  const pace = workout.type === 'running' ? formatPace(workout.distance, workout.duration) : null;
+  const speed = workout.type === 'cycling' ? formatSpeed(workout.distance, workout.duration) : null;
+  const [showPhoto, setShowPhoto] = useState(false);
+
+  return (
+    <div className="anim-risein bg-[#12141C] border border-white/5 rounded-2xl p-4 relative overflow-hidden group" style={style}>
+      <div className="absolute left-0 top-0 bottom-0 w-1" style={{ background: `linear-gradient(180deg, ${s.from}, ${s.to})` }} />
+      <div className="flex items-start gap-3 pl-2">
+        <SportBadge type={workout.type} size="sm" />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="font-display font-semibold text-[#F5F6FA] text-[15px] truncate">
+              {s.label}
+              {workout.type === 'gym' && workout.muscleGroups?.length > 0 && (
+                <span className="font-sans font-normal text-[#9298AC]"> · {workout.muscleGroups.map((k) => MUSCLE_GROUPS.find((m) => m.key === k)?.label).join(', ')}</span>
+              )}
+            </h3>
+            <button onClick={() => onDelete(workout.id)} aria-label="Remover treino"
+              className="opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity text-[#5C6178] hover:text-red-400 shrink-0 p-1">
+              <TrashIcon size={16} />
+            </button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[13px] text-[#9298AC] font-mono">
+            <span>{formatDateLabel(workout.date)}</span>
+            <span className="flex items-center gap-1"><ClockIcon size={13} />{formatDuration(workout.duration)}</span>
+            {workout.distance ? <span className="flex items-center gap-1"><RouteIcon size={13} />{workout.distance} km</span> : null}
+            {workout.type === 'cycling' && workout.elevationGain > 0 ? <span className="flex items-center gap-1"><MountainIcon size={13} />{workout.elevationGain} m</span> : null}
+            {pace && <span style={{ color: s.text }}>{pace}</span>}
+            {speed && <span style={{ color: s.text }}>{speed}</span>}
+          </div>
+
+          {workout.type === 'gym' && workout.exercises?.length > 0 && (
+            <div className="mt-2.5 flex flex-col gap-1">
+              {workout.exercises.map((ex) => (
+                <div key={ex.id} className="text-[13px] flex items-center justify-between gap-3">
+                  <span className="text-[#D8DAE6] truncate">{ex.name}</span>
+                  <span className="font-mono text-[#9298AC] shrink-0">{ex.sets}×{ex.reps}{ex.weight > 0 ? ` · ${ex.weight}kg` : ''}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {workout.notes && <p className="text-[13px] text-[#9298AC] mt-2 leading-snug line-clamp-2">{workout.notes}</p>}
+
+          {workout.photo && (
+            <button onClick={() => setShowPhoto(true)} className="mt-3 w-16 h-16 rounded-xl overflow-hidden border border-white/10 shrink-0">
+              <img src={workout.photo} alt="Foto de progresso" className="w-full h-full object-cover" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {showPhoto && createPortal(
+        <div className="fixed inset-0 z-[70] bg-black/90 flex flex-col items-center justify-center p-6 anim-fadein" onClick={() => setShowPhoto(false)}>
+          <img src={workout.photo} alt="Foto de progresso" className="max-w-full max-h-[80vh] rounded-2xl object-contain" />
+          <p className="text-[#9298AC] text-sm mt-4 font-mono">{formatDateLabel(workout.date)}</p>
+          <button onClick={() => setShowPhoto(false)} className="mt-4 w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-white">
+            <CloseIcon size={18} />
+          </button>
+        </div>,
+        document.body
+      )}
+    </div>
+  );
+}
+
+function EmptyState({ onAdd }) {
+  return (
+    <div className="anim-fadein flex flex-col items-center text-center py-14 px-6">
+      <div className="w-16 h-16 rounded-2xl flex items-center justify-center text-[#F5F6FA] mb-4"
+        style={{ background: 'linear-gradient(135deg, rgba(59,130,246,.18), rgba(168,85,247,.18))' }}>
+        <FlagIcon size={28} />
+      </div>
+      <h3 className="font-display font-semibold text-[#F5F6FA] text-lg">Ainda sem treinos</h3>
+      <p className="text-[#9298AC] text-sm mt-1.5 max-w-[240px]">Regista a tua primeira corrida, saída de bike ou sessão de ginásio.</p>
+      <button onClick={onAdd} className="mt-5 px-5 py-2.5 rounded-full font-medium text-sm text-white"
+        style={{ background: 'linear-gradient(135deg, #3B82F6, #A855F7)' }}>
+        + Adicionar treino
+      </button>
+    </div>
+  );
+}
+
+function SupplementStatus({ supplements, onLog }) {
+  const items = [
+    { type: 'creatina', label: 'Creatina', Icon: CapsuleIcon, color: '#F59E0B' },
+    { type: 'proteina', label: 'Proteína', Icon: ShakerIcon, color: '#38BDF8' },
+  ];
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      {items.map(({ type, label, Icon: ItemIcon, color }) => {
+        const todays = supplements.filter((s) => s.type === type && isToday(s.date)).sort((a, b) => new Date(b.date) - new Date(a.date));
+        const last = todays[0];
+        return (
+          <button key={type} onClick={() => onLog(type)}
+            className="bg-[#12141C] border border-white/5 rounded-2xl p-3.5 flex flex-col gap-2.5 text-left active:scale-[0.98] transition-transform">
+            <div className="flex items-center justify-between">
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: `${color}22`, color }}>
+                <ItemIcon size={17} />
+              </div>
+              {last && <CheckIcon size={15} className="text-emerald-400" />}
+            </div>
+            <div>
+              <div className="text-sm font-medium text-[#F5F6FA]">{label}</div>
+              <div className="text-[12px] text-[#9298AC] font-mono">{last ? `Hoje às ${formatTime(last.date)}` : 'Ainda não hoje'}</div>
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Add-workout flow                                                  */
+/* ---------------------------------------------------------------- */
+
+function AddWorkoutSheet({ onClose, onSave }) {
+  const [sport, setSport] = useState(null);
+  const [muscleGroups, setMuscleGroups] = useState([]);
+  const [exercises, setExercises] = useState([]);
+  const [exName, setExName] = useState('');
+  const [exSets, setExSets] = useState('');
+  const [exReps, setExReps] = useState('');
+  const [exWeight, setExWeight] = useState('');
+  const [distance, setDistance] = useState('');
+  const [elevation, setElevation] = useState('');
+  const [durMin, setDurMin] = useState('');
+  const [durSec, setDurSec] = useState('');
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [notes, setNotes] = useState('');
+  const [photoPreview, setPhotoPreview] = useState(null);
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const photoInputRef = useRef(null);
+  const [stepIdx, setStepIdx] = useState(0);
+
+  const steps = sport === 'gym' ? ['sport', 'muscles', 'exercises', 'details'] : ['sport', 'details'];
+  const step = steps[stepIdx];
+
+  const stepTitles = { sport: 'Escolhe a atividade', muscles: 'Grupos musculares', exercises: 'Exercícios', details: 'Detalhes do treino' };
+
+  function toggleMuscle(key) {
+    setMuscleGroups((prev) => prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]);
+  }
+
+  async function handlePhotoSelect(file) {
+    setPhotoBusy(true);
+    try {
+      const dataUrl = await resizeImageFile(file, 640, 0.8);
+      setPhotoPreview(dataUrl);
+    } catch (e) { /* ficheiro inválido — ignora */ }
+    setPhotoBusy(false);
+  }
+
+  function addExercise() {
+    if (!exName.trim()) return;
+    setExercises((prev) => [...prev, {
+      id: uid(), name: exName.trim(),
+      sets: parseInt(exSets, 10) || 1,
+      reps: parseInt(exReps, 10) || 0,
+      weight: parseFloat((exWeight || '0').replace(',', '.')) || 0,
+    }]);
+    setExName(''); setExSets(''); setExReps(''); setExWeight('');
+  }
+
+  function removeExercise(id) {
+    setExercises((prev) => prev.filter((ex) => ex.id !== id));
+  }
+
+  function goNext() { if (stepIdx < steps.length - 1) setStepIdx(stepIdx + 1); }
+  function goBack() { if (stepIdx > 0) setStepIdx(stepIdx - 1); else onClose(); }
+
+  const durationTotal = (parseFloat(durMin || 0)) + (parseFloat(durSec || 0)) / 60;
+  const distanceNum = parseFloat((distance || '').replace(',', '.'));
+
+  const canSave = sport && durationTotal > 0 &&
+    (sport === 'gym' ? muscleGroups.length > 0 : distanceNum > 0);
+
+  function handleSave() {
+    if (!canSave) return;
+    onSave({
+      id: uid(),
+      type: sport,
+      date: new Date(date + 'T12:00:00').toISOString(),
+      duration: durationTotal,
+      distance: sport === 'gym' ? null : distanceNum,
+      muscleGroups: sport === 'gym' ? muscleGroups : [],
+      exercises: sport === 'gym' ? exercises : [],
+      elevationGain: sport === 'cycling' ? (parseInt(elevation, 10) || 0) : null,
+      photo: photoPreview,
+      notes: notes.trim(),
+    });
+  }
+
+  const livePace = sport === 'running' && distanceNum > 0 && durationTotal > 0 ? formatPace(distanceNum, durationTotal) : null;
+  const liveSpeed = sport === 'cycling' && distanceNum > 0 && durationTotal > 0 ? formatSpeed(distanceNum, durationTotal) : null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-center">
+      <div className="absolute inset-0 bg-black/60 anim-fadein" onClick={onClose} />
+      <div className="anim-slideup relative w-full max-w-[480px] mt-auto bg-[#0D0F16] rounded-t-[28px] border-t border-white/10 flex flex-col max-h-[92vh]">
+
+        <div className="flex items-center justify-between px-5 pt-4 pb-2">
+          <button onClick={goBack} aria-label="Voltar" className="w-9 h-9 flex items-center justify-center rounded-full text-[#9298AC] hover:bg-white/5">
+            <ChevronLeftIcon size={20} />
+          </button>
+          <div className="flex gap-1.5">
+            {steps.map((s, i) => (
+              <div key={s} className="h-1.5 rounded-full transition-all"
+                style={{ width: i === stepIdx ? 22 : 8, background: i <= stepIdx ? 'linear-gradient(90deg,#3B82F6,#A855F7)' : '#242837' }} />
+            ))}
+          </div>
+          <button onClick={onClose} aria-label="Fechar" className="w-9 h-9 flex items-center justify-center rounded-full text-[#9298AC] hover:bg-white/5">
+            <CloseIcon size={18} />
+          </button>
+        </div>
+
+        <div className="px-5 pb-2">
+          <h2 className="font-display font-bold text-xl text-[#F5F6FA]">{stepTitles[step]}</h2>
+        </div>
+
+        <div className="px-5 pb-6 overflow-y-auto">
+
+          {step === 'sport' && (
+            <div className="flex flex-col gap-3 mt-2">
+              {Object.values(SPORTS).map((s) => (
+                <button key={s.key} onClick={() => { setSport(s.key); setStepIdx(1); }}
+                  className={`flex items-center gap-4 p-4 rounded-2xl border transition-all text-left ${sport === s.key ? 'border-white/20' : 'border-white/5 hover:border-white/10'}`}
+                  style={{ background: sport === s.key ? `linear-gradient(135deg, ${s.from}22, ${s.to}22)` : '#12141C' }}>
+                  <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-white shrink-0"
+                    style={{ background: `linear-gradient(135deg, ${s.from}, ${s.to})` }}>
+                    <SportIcon type={s.key} size={26} />
+                  </div>
+                  <div>
+                    <div className="font-display font-semibold text-[#F5F6FA]">{s.label}</div>
+                    <div className="text-[13px] text-[#9298AC]">
+                      {s.key === 'running' && 'Distância, tempo e ritmo'}
+                      {s.key === 'cycling' && 'Distância, altitude e velocidade'}
+                      {s.key === 'gym' && 'Grupos musculares e exercícios'}
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {step === 'muscles' && (
+            <div>
+              <p className="text-sm text-[#9298AC] -mt-1 mb-4">Podes escolher mais do que um grupo.</p>
+              <div className="grid grid-cols-2 gap-3">
+                {MUSCLE_GROUPS.map((m) => {
+                  const active = muscleGroups.includes(m.key);
+                  return (
+                    <button key={m.key} onClick={() => toggleMuscle(m.key)}
+                      className={`flex items-center justify-between px-4 py-3.5 rounded-xl border font-medium text-sm transition-all ${active ? 'text-[#0D0F16] border-transparent' : 'text-[#F5F6FA] border-white/10 bg-[#12141C]'}`}
+                      style={active ? { background: 'linear-gradient(135deg,#4ADE80,#10B981)' } : {}}>
+                      {m.label}
+                      {active && <CheckIcon size={16} />}
+                    </button>
+                  );
+                })}
+              </div>
+              <button disabled={muscleGroups.length === 0} onClick={goNext}
+                className="w-full mt-6 py-3.5 rounded-full font-semibold text-white disabled:opacity-30 transition-opacity"
+                style={{ background: 'linear-gradient(135deg,#3B82F6,#A855F7)' }}>
+                Continuar
+              </button>
+            </div>
+          )}
+
+          {step === 'exercises' && (
+            <div>
+              <p className="text-sm text-[#9298AC] -mt-1 mb-4">Adiciona os exercícios que fizeste, com carga e repetições. É opcional — podes continuar sem nenhum.</p>
+
+              {exercises.length > 0 && (
+                <div className="flex flex-col gap-2 mb-4">
+                  {exercises.map((ex) => (
+                    <div key={ex.id} className="flex items-center justify-between bg-[#12141C] border border-white/5 rounded-xl px-4 py-3">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-[#F5F6FA] truncate">{ex.name}</div>
+                        <div className="text-[12px] text-[#9298AC] font-mono">{ex.sets} × {ex.reps} reps{ex.weight > 0 ? ` · ${ex.weight} kg` : ''}</div>
+                      </div>
+                      <button onClick={() => removeExercise(ex.id)} className="shrink-0 text-[#5C6178] hover:text-red-400 p-1">
+                        <TrashIcon size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="bg-[#12141C] border border-white/5 rounded-2xl p-4 flex flex-col gap-3">
+                <input value={exName} onChange={(e) => setExName(e.target.value)} placeholder="Nome do exercício"
+                  className="w-full bg-[#0D0F16] border border-white/10 rounded-xl px-4 py-2.5 text-[#F5F6FA] text-sm outline-none focus:border-blue-400/60" />
+                <div className="flex gap-3">
+                  <div className="flex-1">
+                    <label className="block text-[12px] text-[#9298AC] mb-1">Séries</label>
+                    <input inputMode="numeric" value={exSets} onChange={(e) => setExSets(e.target.value.replace(/\D/g, ''))} placeholder="3"
+                      className="w-full bg-[#0D0F16] border border-white/10 rounded-xl px-3 py-2.5 text-[#F5F6FA] font-mono outline-none focus:border-blue-400/60" />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-[12px] text-[#9298AC] mb-1">Reps</label>
+                    <input inputMode="numeric" value={exReps} onChange={(e) => setExReps(e.target.value.replace(/\D/g, ''))} placeholder="10"
+                      className="w-full bg-[#0D0F16] border border-white/10 rounded-xl px-3 py-2.5 text-[#F5F6FA] font-mono outline-none focus:border-blue-400/60" />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-[12px] text-[#9298AC] mb-1">Carga (kg)</label>
+                    <input inputMode="decimal" value={exWeight} onChange={(e) => setExWeight(e.target.value)} placeholder="0"
+                      className="w-full bg-[#0D0F16] border border-white/10 rounded-xl px-3 py-2.5 text-[#F5F6FA] font-mono outline-none focus:border-blue-400/60" />
+                  </div>
+                </div>
+                <button type="button" onClick={addExercise} disabled={!exName.trim()}
+                  className="w-full py-2.5 rounded-full font-medium text-sm text-white disabled:opacity-30 transition-opacity"
+                  style={{ background: 'linear-gradient(135deg,#4ADE80,#10B981)' }}>
+                  + Adicionar exercício
+                </button>
+              </div>
+
+              <button onClick={goNext}
+                className="w-full mt-6 py-3.5 rounded-full font-semibold text-white transition-opacity"
+                style={{ background: 'linear-gradient(135deg,#3B82F6,#A855F7)' }}>
+                Continuar
+              </button>
+            </div>
+          )}
+
+          {step === 'details' && sport && (
+            <div className="flex flex-col gap-5 mt-1">
+              {sport !== 'gym' && (
+                <div>
+                  <label className="block text-[13px] font-medium text-[#9298AC] mb-1.5">Distância (km)</label>
+                  <input inputMode="decimal" value={distance} onChange={(e) => setDistance(e.target.value)}
+                    placeholder="0.0" className="w-full bg-[#12141C] border border-white/10 rounded-xl px-4 py-3 text-[#F5F6FA] font-mono text-lg outline-none focus:border-blue-400/60" />
+                </div>
+              )}
+
+              {sport === 'cycling' && (
+                <div>
+                  <label className="text-[13px] font-medium text-[#9298AC] mb-1.5 flex items-center gap-1.5"><MountainIcon size={14} />Altitude acumulada (m)</label>
+                  <input inputMode="numeric" value={elevation} onChange={(e) => setElevation(e.target.value.replace(/\D/g, ''))}
+                    placeholder="0" className="w-full bg-[#12141C] border border-white/10 rounded-xl px-4 py-3 text-[#F5F6FA] font-mono text-lg outline-none focus:border-blue-400/60" />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-[13px] font-medium text-[#9298AC] mb-1.5">Duração</label>
+                <div className="flex gap-3">
+                  <div className="flex-1 relative">
+                    <input inputMode="numeric" value={durMin} onChange={(e) => setDurMin(e.target.value.replace(/\D/g, ''))}
+                      placeholder="00" className="w-full bg-[#12141C] border border-white/10 rounded-xl px-4 py-3 text-[#F5F6FA] font-mono text-lg outline-none focus:border-blue-400/60" />
+                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-[#5C6178]">min</span>
+                  </div>
+                  <div className="flex-1 relative">
+                    <input inputMode="numeric" value={durSec} onChange={(e) => setDurSec(Math.min(59, +e.target.value.replace(/\D/g, '') || 0).toString())}
+                      placeholder="00" className="w-full bg-[#12141C] border border-white/10 rounded-xl px-4 py-3 text-[#F5F6FA] font-mono text-lg outline-none focus:border-blue-400/60" />
+                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-[#5C6178]">seg</span>
+                  </div>
+                </div>
+                {(livePace || liveSpeed) && (
+                  <p className="text-[13px] mt-2 font-mono" style={{ color: SPORTS[sport].text }}>
+                    {livePace && `Ritmo: ${livePace}`}{liveSpeed && `Velocidade média: ${liveSpeed}`}
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="text-[13px] font-medium text-[#9298AC] mb-1.5 flex items-center gap-1.5"><CalendarIcon size={14} />Data</label>
+                <input type="date" value={date} onChange={(e) => setDate(e.target.value)} max={new Date().toISOString().slice(0, 10)}
+                  className="w-full bg-[#12141C] border border-white/10 rounded-xl px-4 py-3 text-[#F5F6FA] outline-none focus:border-blue-400/60" />
+              </div>
+
+              <div>
+                <label className="block text-[13px] font-medium text-[#9298AC] mb-1.5">Foto de progresso (opcional)</label>
+                <input ref={photoInputRef} type="file" accept="image/*" className="hidden"
+                  onChange={(e) => { if (e.target.files[0]) handlePhotoSelect(e.target.files[0]); e.target.value = ''; }} />
+                {photoPreview ? (
+                  <div className="relative w-20 h-20">
+                    <img src={photoPreview} alt="" className="w-full h-full object-cover rounded-xl border border-white/10" />
+                    <button type="button" onClick={() => setPhotoPreview(null)} aria-label="Remover foto"
+                      className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-[#1A1D28] border border-white/10 flex items-center justify-center text-[#9298AC]">
+                      <CloseIcon size={12} />
+                    </button>
+                  </div>
+                ) : (
+                  <button type="button" onClick={() => photoInputRef.current.click()} disabled={photoBusy}
+                    className="w-20 h-20 rounded-xl border border-dashed border-white/15 flex flex-col items-center justify-center gap-1 text-[#5C6178] disabled:opacity-50">
+                    <CameraIcon size={19} />
+                    <span className="text-[10px]">{photoBusy ? '…' : 'Adicionar'}</span>
+                  </button>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-[13px] font-medium text-[#9298AC] mb-1.5">Notas (opcional)</label>
+                <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3}
+                  placeholder={sport === 'gym' ? 'Como correu a sessão?' : 'Como te sentiste? Percurso, clima...'}
+                  className="w-full bg-[#12141C] border border-white/10 rounded-xl px-4 py-3 text-[#F5F6FA] text-sm outline-none focus:border-blue-400/60 resize-none" />
+              </div>
+
+              <button disabled={!canSave} onClick={handleSave}
+                className="w-full py-3.5 rounded-full font-semibold text-white disabled:opacity-30 transition-opacity mt-1"
+                style={{ background: 'linear-gradient(135deg,#3B82F6,#A855F7)' }}>
+                Guardar treino
+              </button>
+            </div>
+          )}
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Toast                                                              */
+/* ---------------------------------------------------------------- */
+
+function Toast({ toast }) {
+  if (!toast) return null;
+  return (
+    <div className="anim-toast fixed bottom-24 left-1/2 z-[60] bg-[#1A1D28] border border-white/10 text-[#F5F6FA] text-sm px-4 py-3 rounded-full shadow-2xl flex items-center gap-3 max-w-[90%]">
+      <span className="flex items-center gap-2"><CheckCircleIcon size={16} className="text-emerald-400 shrink-0" />{toast.message}</span>
+      {toast.undo && (
+        <button onClick={toast.undo} className="text-blue-400 font-semibold shrink-0">Anular</button>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Install banner (Adicionar ao ecrã principal)                      */
+/* ---------------------------------------------------------------- */
+
+function InstallBanner({ platform, onInstall, onDismiss }) {
+  return (
+    <div className="anim-risein mx-5 mt-3 mb-1 bg-[#12141C] border border-white/10 rounded-2xl p-3.5 flex items-center gap-3">
+      <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white shrink-0"
+        style={{ background: 'linear-gradient(135deg,#3B82F6,#A855F7)' }}>
+        <DownloadIcon size={18} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium text-[#F5F6FA]">Instala a FitTrack</div>
+        <div className="text-[12px] text-[#9298AC] leading-snug">
+          {platform === 'ios'
+            ? <>Toca em <strong className="text-[#D8DAE6]">Partilhar</strong> e depois em <strong className="text-[#D8DAE6]">"Adicionar ao ecrã principal"</strong></>
+            : 'Acede rapidamente a partir do teu ecrã principal'}
+        </div>
+      </div>
+      {platform !== 'ios' && (
+        <button onClick={onInstall} className="shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold text-white"
+          style={{ background: 'linear-gradient(135deg,#3B82F6,#A855F7)' }}>
+          Instalar
+        </button>
+      )}
+      <button onClick={onDismiss} aria-label="Dispensar" className="shrink-0 text-[#5C6178] hover:text-[#9298AC] p-1">
+        <CloseIcon size={15} />
+      </button>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Bottom navigation                                                  */
+/* ---------------------------------------------------------------- */
+
+function BottomNav({ view, setView, onAdd }) {
+  return (
+    <div className="fixed bottom-0 left-0 right-0 flex justify-center z-40" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+      <div className="w-full max-w-[480px] relative">
+        <div className="mx-4 mb-4 bg-[#12141C]/95 backdrop-blur border border-white/5 rounded-[26px] px-5 py-3 flex items-center justify-between shadow-2xl">
+          <button onClick={() => setView('dashboard')} className="flex flex-col items-center gap-1 px-2 py-1" style={{ color: view === 'dashboard' ? '#F5F6FA' : '#5C6178' }}>
+            <HomeIcon size={21} />
+            <span className="text-[10px] font-medium">Início</span>
+          </button>
+
+          <button onClick={() => setView('nutrition')} className="flex flex-col items-center gap-1 px-2 py-1" style={{ color: view === 'nutrition' ? '#F5F6FA' : '#5C6178' }}>
+            <AppleIcon size={21} />
+            <span className="text-[10px] font-medium">Nutrição</span>
+          </button>
+
+          <button onClick={onAdd} aria-label="Adicionar treino"
+            className="w-14 h-14 rounded-full flex items-center justify-center text-white -mt-8 shadow-lg shadow-blue-500/30 border-4 border-[#05060A]"
+            style={{ background: 'linear-gradient(135deg,#3B82F6,#A855F7)' }}>
+            <PlusIcon size={24} />
+          </button>
+
+          <button onClick={() => setView('history')} className="flex flex-col items-center gap-1 px-2 py-1" style={{ color: view === 'history' ? '#F5F6FA' : '#5C6178' }}>
+            <HistoryIcon size={21} />
+            <span className="text-[10px] font-medium">Histórico</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Views                                                              */
+/* ---------------------------------------------------------------- */
+
+function Dashboard({ workouts, calories, supplements, setView, onDelete, onAdd, onLogSupplement, onOpenGames }) {
+  const weeklyCount = computeWeeklyCount(workouts);
+  const streak = computeStreak(workouts);
+  const totalDistance = computeTotalDistance(workouts);
+  const todayCalories = calories.filter((c) => isToday(c.date)).reduce((sum, c) => sum + c.totalKcal, 0);
+  const recent = workouts.slice(0, 4);
+
+  return (
+    <div className="px-5 pt-2 pb-4">
+      <div className="anim-risein flex items-start justify-between">
+        <div>
+          <p className="text-[#9298AC] text-sm">{greeting()},</p>
+          <h1 className="font-display font-bold text-2xl text-[#F5F6FA] -mt-0.5">Vamos treinar</h1>
+        </div>
+        <button onClick={onOpenGames} aria-label="Jogos" title="Jogos"
+          className="w-9 h-9 rounded-full bg-white/5 flex items-center justify-center text-[#9298AC] hover:text-[#F5F6FA] transition-colors mt-1 shrink-0">
+          <GameControllerIcon size={17} />
+        </button>
+      </div>
+
+      <div className="relative mt-6 flex justify-center">
+        <div className="absolute w-52 h-52 rounded-full anim-glow pointer-events-none"
+          style={{ background: 'radial-gradient(circle, rgba(59,130,246,0.18), transparent 70%)' }} />
+        <ActivityRing progress={(weeklyCount / WEEKLY_GOAL) * 100} count={weeklyCount} goal={WEEKLY_GOAL} />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 mt-6">
+        <StatChip icon={<CheckIcon size={16} />} value={workouts.length} label="Treinos totais" />
+        <StatChip icon={<RouteIcon size={16} />} value={`${totalDistance.toFixed(1)}`} label="Km acumulados" />
+        <StatChip icon={<FlameIcon size={16} />} value={streak} label="Dias seguidos" />
+        <StatChip icon={<AppleIcon size={16} />} value={Math.round(todayCalories)} label="Calorias hoje" />
+      </div>
+
+      <h2 className="font-display font-semibold text-[#F5F6FA] mt-7 mb-3">Suplementos de hoje</h2>
+      <SupplementStatus supplements={supplements} onLog={onLogSupplement} />
+
+      <div className="flex items-center justify-between mt-8 mb-3">
+        <h2 className="font-display font-semibold text-[#F5F6FA]">Atividade recente</h2>
+        {workouts.length > 0 && (
+          <button onClick={() => setView('history')} className="text-[13px] text-blue-400 font-medium">Ver tudo</button>
+        )}
+      </div>
+
+      {workouts.length === 0 ? (
+        <EmptyState onAdd={onAdd} />
+      ) : (
+        <div className="flex flex-col gap-3">
+          {recent.map((w, i) => <WorkoutCard key={w.id} workout={w} onDelete={onDelete} style={{ animationDelay: `${i * 45}ms` }} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NutritionView({ calories, supplements, onAddCalorie, onDeleteCalorie, onLogSupplement, onDeleteSupplement }) {
+  const [food, setFood] = useState('');
+  const [kcal100, setKcal100] = useState('');
+  const [grams, setGrams] = useState('');
+
+  const total = (parseFloat(kcal100) || 0) * (parseFloat(grams) || 0) / 100;
+  const todayCalories = calories.filter((c) => isToday(c.date));
+  const todayTotal = todayCalories.reduce((sum, c) => sum + c.totalKcal, 0);
+
+  function submit(e) {
+    e.preventDefault();
+    if (!kcal100 || !grams) return;
+    onAddCalorie({
+      id: uid(),
+      food: food.trim() || 'Refeição',
+      kcalPer100g: parseFloat(kcal100.replace(',', '.')),
+      grams: parseFloat(grams.replace(',', '.')),
+      totalKcal: Math.round(total),
+      date: new Date().toISOString(),
+    });
+    setFood(''); setKcal100(''); setGrams('');
+  }
+
+  return (
+    <div className="px-5 pt-2 pb-4">
+      <h1 className="font-display font-bold text-2xl text-[#F5F6FA] mb-1">Nutrição</h1>
+      <p className="text-[#9298AC] text-sm mb-5">Calorias e suplementos do dia</p>
+
+      <div className="anim-risein bg-[#12141C] border border-white/5 rounded-2xl p-4 flex items-center gap-4">
+        <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-white shrink-0"
+          style={{ background: 'linear-gradient(135deg,#FB923C,#EF4444)' }}>
+          <AppleIcon size={22} />
+        </div>
+        <div>
+          <div className="font-mono font-bold text-2xl text-[#F5F6FA] leading-none">
+            {Math.round(todayTotal)}<span className="text-[13px] text-[#9298AC] font-sans font-normal"> kcal hoje</span>
+          </div>
+          <div className="text-[12px] text-[#9298AC] mt-1">{todayCalories.length} registo{todayCalories.length !== 1 ? 's' : ''}</div>
+        </div>
+      </div>
+
+      <h2 className="font-display font-semibold text-[#F5F6FA] mt-7 mb-3">Suplementos</h2>
+      <SupplementStatus supplements={supplements} onLog={onLogSupplement} />
+
+      {supplements.length > 0 && (
+        <div className="mt-4 flex flex-col gap-5">
+          {groupByDay(supplements).map(([label, items]) => (
+            <div key={label}>
+              <h3 className="text-[11px] uppercase tracking-wide text-[#5C6178] font-medium mb-1.5 capitalize">{label}</h3>
+              <div className="flex flex-col gap-1.5">
+                {items.map((s) => (
+                  <div key={s.id} className="flex items-center justify-between bg-[#12141C] border border-white/5 rounded-xl px-3.5 py-2.5 group">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-lg flex items-center justify-center"
+                        style={{ background: s.type === 'creatina' ? '#F59E0B22' : '#38BDF822', color: s.type === 'creatina' ? '#F59E0B' : '#38BDF8' }}>
+                        {s.type === 'creatina' ? <CapsuleIcon size={14} /> : <ShakerIcon size={14} />}
+                      </div>
+                      <span className="text-sm text-[#F5F6FA]">{s.type === 'creatina' ? 'Creatina' : 'Proteína'}</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-[12px] text-[#9298AC] font-mono">{formatTime(s.date)}</span>
+                      <button onClick={() => onDeleteSupplement(s.id)} className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-[#5C6178] hover:text-red-400 transition-opacity">
+                        <TrashIcon size={14} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <h2 className="font-display font-semibold text-[#F5F6FA] mt-8 mb-3">Registar alimento</h2>
+      <form onSubmit={submit} className="bg-[#12141C] border border-white/5 rounded-2xl p-4 flex flex-col gap-3">
+        <input value={food} onChange={(e) => setFood(e.target.value)} placeholder="Alimento (opcional)"
+          className="w-full bg-[#0D0F16] border border-white/10 rounded-xl px-4 py-2.5 text-[#F5F6FA] text-sm outline-none focus:border-blue-400/60" />
+        <div className="flex gap-3">
+          <div className="flex-1">
+            <label className="block text-[12px] text-[#9298AC] mb-1">Kcal / 100g</label>
+            <input inputMode="decimal" value={kcal100} onChange={(e) => setKcal100(e.target.value)} placeholder="0"
+              className="w-full bg-[#0D0F16] border border-white/10 rounded-xl px-3 py-2.5 text-[#F5F6FA] font-mono outline-none focus:border-blue-400/60" />
+          </div>
+          <div className="flex-1">
+            <label className="block text-[12px] text-[#9298AC] mb-1">Gramas</label>
+            <input inputMode="decimal" value={grams} onChange={(e) => setGrams(e.target.value)} placeholder="0"
+              className="w-full bg-[#0D0F16] border border-white/10 rounded-xl px-3 py-2.5 text-[#F5F6FA] font-mono outline-none focus:border-blue-400/60" />
+          </div>
+        </div>
+        {(kcal100 && grams) ? <p className="text-[13px] font-mono text-orange-300">= {Math.round(total)} kcal</p> : null}
+        <button type="submit" disabled={!kcal100 || !grams}
+          className="w-full py-3 rounded-full font-semibold text-white disabled:opacity-30 transition-opacity"
+          style={{ background: 'linear-gradient(135deg,#FB923C,#EF4444)' }}>
+          Adicionar
+        </button>
+      </form>
+
+      {calories.length > 0 && (
+        <div className="mt-8">
+          <h2 className="font-display font-semibold text-[#F5F6FA] mb-3">Histórico de refeições</h2>
+          <div className="flex flex-col gap-6">
+            {groupByDay(calories).map(([label, items]) => (
+              <div key={label}>
+                <h3 className="text-[12px] uppercase tracking-wide text-[#5C6178] font-medium mb-2 capitalize">{label}</h3>
+                <div className="flex flex-col gap-2">
+                  {items.map((c) => (
+                    <div key={c.id} className="bg-[#12141C] border border-white/5 rounded-xl px-4 py-3 flex items-center justify-between group">
+                      <div className="min-w-0">
+                        <div className="text-sm text-[#F5F6FA] font-medium truncate">{c.food}</div>
+                        <div className="text-[12px] text-[#9298AC] font-mono">{c.grams}g · {c.kcalPer100g} kcal/100g · {formatTime(c.date)}</div>
+                      </div>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <span className="font-mono text-sm text-orange-300">{Math.round(c.totalKcal)} kcal</span>
+                        <button onClick={() => onDeleteCalorie(c.id)} className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-[#5C6178] hover:text-red-400 transition-opacity">
+                          <TrashIcon size={15} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HistoryView({ workouts, onDelete }) {
+  const [filter, setFilter] = useState('all');
+  const filtered = filter === 'all' ? workouts : workouts.filter((w) => w.type === filter);
+  const groups = useMemo(() => groupByDay(filtered), [filtered]);
+
+  return (
+    <div className="px-5 pt-2 pb-4">
+      <h1 className="font-display font-bold text-2xl text-[#F5F6FA] mb-4">Histórico</h1>
+
+      <div className="flex gap-2 overflow-x-auto pb-1 mb-5 -mx-5 px-5">
+        {['all', 'running', 'cycling', 'gym'].map((f) => (
+          <button key={f} onClick={() => setFilter(f)}
+            className={`shrink-0 px-4 py-2 rounded-full text-sm font-medium border transition-colors ${filter === f ? 'text-white border-transparent' : 'text-[#9298AC] border-white/10 bg-[#12141C]'}`}
+            style={filter === f ? { background: 'linear-gradient(135deg,#3B82F6,#A855F7)' } : {}}>
+            {f === 'all' ? 'Todos' : SPORTS[f].label}
+          </button>
+        ))}
+      </div>
+
+      {filtered.length === 0 ? (
+        <p className="text-center text-[#5C6178] text-sm mt-16">Sem treinos nesta categoria.</p>
+      ) : (
+        <div className="flex flex-col gap-6">
+          {groups.map(([label, items]) => (
+            <div key={label}>
+              <h3 className="text-[12px] uppercase tracking-wide text-[#5C6178] font-medium mb-2 capitalize">{label}</h3>
+              <div className="flex flex-col gap-3">
+                {items.map((w) => <WorkoutCard key={w.id} workout={w} onDelete={onDelete} />)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Auth                                                               */
+/* ---------------------------------------------------------------- */
+
+function SplashLoader() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-[#05060A]">
+      <div className="w-10 h-10 rounded-full border-2 border-white/10 border-t-blue-400 animate-spin" />
+    </div>
+  );
+}
+
+function usernameToPseudoEmail(username) {
+  const clean = username.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, '');
+  return `${clean}@fittrack.app`;
+}
+
+function AuthScreen({ onGuest }) {
+  const [mode, setMode] = useState('signin');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    setError(''); setInfo(''); setLoading(true);
+
+    const clean = username.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, '');
+    if (clean.length < 3) {
+      setLoading(false);
+      setError('Usa um nome com pelo menos 3 letras ou números.');
+      return;
+    }
+    const pseudoEmail = usernameToPseudoEmail(username);
+
+    const { data, error } = mode === 'signin'
+      ? await sb.auth.signInWithPassword({ email: pseudoEmail, password })
+      : await sb.auth.signUp({ email: pseudoEmail, password });
+
+    setLoading(false);
+    if (error) {
+      if (error.message.includes('Invalid login')) setError('Nome ou palavra-passe incorretos.');
+      else if (error.message.includes('already registered') || error.message.includes('already exists')) setError('Esse nome já está a ser usado. Escolhe outro ou inicia sessão.');
+      else setError(error.message);
+    } else if (mode === 'signup' && !data.session) {
+      setInfo('Conta criada, mas o projeto está a pedir confirmação por email — como não usamos email a sério aqui, desativa isso nas definições do Supabase (ver instruções) e tenta novamente.');
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex justify-center items-center px-6 bg-[#05060A]">
+      <div className="w-full max-w-[380px] anim-risein">
+        <div className="flex flex-col items-center mb-8">
+          <div className="w-12 h-12 rounded-2xl flex items-center justify-center font-display font-black text-lg text-white mb-3"
+            style={{ background: 'linear-gradient(135deg,#3B82F6,#A855F7)' }}>F</div>
+          <h1 className="font-display font-bold text-2xl text-[#F5F6FA]">FitTrack</h1>
+          <p className="text-[#9298AC] text-sm mt-1">Os teus treinos, em todo o lado.</p>
+        </div>
+
+        <div className="flex bg-[#12141C] border border-white/5 rounded-full p-1 mb-6">
+          <button onClick={() => { setMode('signin'); setError(''); setInfo(''); }}
+            className={`flex-1 py-2 rounded-full text-sm font-medium transition-colors ${mode === 'signin' ? 'text-white' : 'text-[#9298AC]'}`}
+            style={mode === 'signin' ? { background: 'linear-gradient(135deg,#3B82F6,#A855F7)' } : {}}>
+            Entrar
+          </button>
+          <button onClick={() => { setMode('signup'); setError(''); setInfo(''); }}
+            className={`flex-1 py-2 rounded-full text-sm font-medium transition-colors ${mode === 'signup' ? 'text-white' : 'text-[#9298AC]'}`}
+            style={mode === 'signup' ? { background: 'linear-gradient(135deg,#3B82F6,#A855F7)' } : {}}>
+            Criar conta
+          </button>
+        </div>
+
+        <form onSubmit={submit} className="flex flex-col gap-3">
+          <div className="relative">
+            <UserIcon size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-[#5C6178]" />
+            <input type="text" required autoCapitalize="none" autoCorrect="off" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Nome de utilizador"
+              className="w-full bg-[#12141C] border border-white/10 rounded-xl pl-11 pr-4 py-3 text-[#F5F6FA] text-sm outline-none focus:border-blue-400/60" />
+          </div>
+          <div className="relative">
+            <LockIcon size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-[#5C6178]" />
+            <input type="password" required minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Palavra-passe"
+              className="w-full bg-[#12141C] border border-white/10 rounded-xl pl-11 pr-4 py-3 text-[#F5F6FA] text-sm outline-none focus:border-blue-400/60" />
+          </div>
+
+          {error && <p className="text-[13px] text-red-400">{error}</p>}
+          {info && <p className="text-[13px] text-emerald-400">{info}</p>}
+
+          <button type="submit" disabled={loading}
+            className="w-full py-3.5 rounded-full font-semibold text-white disabled:opacity-50 transition-opacity mt-1"
+            style={{ background: 'linear-gradient(135deg,#3B82F6,#A855F7)' }}>
+            {loading ? 'A processar…' : mode === 'signin' ? 'Entrar' : 'Criar conta'}
+          </button>
+        </form>
+
+        <button onClick={onGuest} className="w-full text-center mt-5 text-sm text-[#5C6178] hover:text-[#9298AC]">
+          Continuar sem conta (dados só neste aparelho)
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Mini-jogos                                                         */
+/* ---------------------------------------------------------------- */
+
+function getCanvasPos(e, canvas) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+  return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+}
+
+function drawGameBackground(ctx, w, h) {
+  ctx.clearRect(0, 0, w, h);
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, '#0D0F16');
+  grad.addColorStop(1, '#05060A');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
+}
+
+function GameOverOverlay({ label, score, isBest, color, onRestart }) {
+  return (
+    <div className="absolute inset-0 bg-black/75 flex flex-col items-center justify-center gap-3 text-center px-4">
+      <p className="text-[#F5F6FA] font-display font-bold text-xl">Fim de jogo</p>
+      <p className="text-[#9298AC] text-sm">{label}: {score}{isBest ? ' · novo recorde!' : ''}</p>
+      <button onClick={onRestart} className="px-5 py-2 rounded-full text-sm font-semibold text-white"
+        style={{ background: color }}>
+        Jogar de novo
+      </button>
+    </div>
+  );
+}
+
+const CATCH_ITEM_TYPES = [
+  { key: 'dumbbell', points: 1, speed: 95, weight: 5, color: '#4ADE80' },
+  { key: 'plate', points: 2, speed: 120, weight: 3, color: '#60A5FA' },
+  { key: 'kettlebell', points: 3, speed: 150, weight: 2, color: '#F59E0B' },
+];
+
+function pickWeighted(list) {
+  const total = list.reduce((s, t) => s + t.weight, 0);
+  let r = Math.random() * total;
+  for (const t of list) { if (r < t.weight) return t; r -= t.weight; }
+  return list[0];
+}
+
+function CatchGame({ onExit, bestScore, onNewBest }) {
+  const canvasRef = useRef(null);
+  const stateRef = useRef({ items: [], lastSpawn: 0, elapsed: 0, running: true });
+  const [score, setScore] = useState(0);
+  const [lives, setLives] = useState(3);
+  const [combo, setCombo] = useState(0);
+  const [gameOver, setGameOver] = useState(false);
+  const W = 320, H = 420;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    let raf, last = performance.now();
+
+    function spawn(st) {
+      const type = pickWeighted(CATCH_ITEM_TYPES);
+      st.items.push({ id: Math.random(), x: 26 + Math.random() * (W - 52), y: -24, type, vy: type.speed + st.elapsed * 2.2 });
+    }
+
+    function loop(now) {
+      const dt = Math.min((now - last) / 1000, 0.05);
+      last = now;
+      const st = stateRef.current;
+      if (!st.running) { raf = requestAnimationFrame(loop); return; }
+      st.elapsed += dt;
+
+      if (now - st.lastSpawn > Math.max(430, 1000 - st.elapsed * 16)) { spawn(st); st.lastSpawn = now; }
+
+      let livesLost = 0;
+      st.items = st.items.filter((it) => {
+        it.y += it.vy * dt;
+        if (it.y > H + 24) { livesLost++; return false; }
+        return true;
+      });
+      if (livesLost > 0) {
+        setCombo(0);
+        setLives((l) => {
+          const nl = Math.max(0, l - livesLost);
+          if (nl <= 0) { st.running = false; setGameOver(true); }
+          return nl;
+        });
+      }
+
+      drawGameBackground(ctx, W, H);
+      st.items.forEach((it) => {
+        ctx.beginPath();
+        ctx.fillStyle = it.type.color;
+        ctx.arc(it.x, it.y, 17, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#05060A';
+        ctx.font = 'bold 13px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(String(it.type.points), it.x, it.y + 1);
+      });
+
+      raf = requestAnimationFrame(loop);
+    }
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  function handleTap(e) {
+    e.preventDefault();
+    if (gameOver) return;
+    const { x, y } = getCanvasPos(e, canvasRef.current);
+    const st = stateRef.current;
+    const idx = st.items.findIndex((it) => Math.hypot(it.x - x, it.y - y) < 26);
+    if (idx >= 0) {
+      const it = st.items[idx];
+      st.items.splice(idx, 1);
+      setCombo((c) => {
+        const nc = c + 1;
+        const multiplier = 1 + Math.floor(nc / 5) * 0.5;
+        setScore((s) => {
+          const ns = Math.round(s + it.type.points * multiplier);
+          if (ns > bestScore) onNewBest(ns);
+          return ns;
+        });
+        return nc;
+      });
+    }
+  }
+
+  function restart() {
+    stateRef.current = { items: [], lastSpawn: 0, elapsed: 0, running: true };
+    setScore(0); setLives(3); setCombo(0); setGameOver(false);
+  }
+
+  return (
+    <div className="flex flex-col items-center w-full">
+      <div className="flex items-center justify-between w-full max-w-[320px] mb-3 text-sm">
+        <span className="font-mono text-[#F5F6FA]">Pontos: {score}</span>
+        <span className="font-mono text-orange-300 text-[13px]">Combo ×{1 + Math.floor(combo / 5) * 0.5}</span>
+        <LifeDots lives={lives} />
+      </div>
+      <div className="relative rounded-2xl overflow-hidden border border-white/10 w-full" style={{ maxWidth: 320 }}>
+        <canvas ref={canvasRef} width={W} height={H} style={{ width: '100%', height: 'auto', touchAction: 'none', display: 'block' }}
+          onClick={handleTap} onTouchStart={handleTap} />
+        {gameOver && <GameOverOverlay label="Pontuação" score={score} isBest={score > bestScore} color="linear-gradient(135deg,#3B82F6,#A855F7)" onRestart={restart} />}
+      </div>
+      <p className="text-[12px] text-[#5C6178] mt-2">Toca nos pesos antes que caiam.</p>
+      <button onClick={onExit} className="mt-3 text-sm text-[#5C6178] hover:text-[#9298AC]">← Voltar aos jogos</button>
+    </div>
+  );
+}
+
+const BASKET_GOOD_COLORS = ['#4ADE80', '#38BDF8', '#FBBF24'];
+const BASKET_BAD_COLORS = ['#F87171', '#F472B6'];
+
+function BasketGame({ onExit, bestScore, onNewBest }) {
+  const canvasRef = useRef(null);
+  const stateRef = useRef({ items: [], lastSpawn: 0, elapsed: 0, running: true, basketX: 160 });
+  const [score, setScore] = useState(0);
+  const [lives, setLives] = useState(3);
+  const [gameOver, setGameOver] = useState(false);
+  const W = 320, H = 420;
+  const BASKET_W = 66, BASKET_H = 20, BASKET_Y = H - 36;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    let raf, last = performance.now();
+
+    function spawn(st) {
+      const isGood = Math.random() < 0.68;
+      const palette = isGood ? BASKET_GOOD_COLORS : BASKET_BAD_COLORS;
+      st.items.push({
+        id: Math.random(), good: isGood, color: palette[Math.floor(Math.random() * palette.length)],
+        x: 22 + Math.random() * (W - 44), y: -18, vy: 105 + st.elapsed * 3 + Math.random() * 25,
+      });
+    }
+
+    function loop(now) {
+      const dt = Math.min((now - last) / 1000, 0.05);
+      last = now;
+      const st = stateRef.current;
+      if (!st.running) { raf = requestAnimationFrame(loop); return; }
+      st.elapsed += dt;
+
+      if (now - st.lastSpawn > Math.max(380, 950 - st.elapsed * 13)) { spawn(st); st.lastSpawn = now; }
+
+      let lostLives = 0;
+      st.items = st.items.filter((it) => {
+        it.y += it.vy * dt;
+        const caughtY = it.y >= BASKET_Y - 16 && it.y <= BASKET_Y + 6;
+        const inBasketX = Math.abs(it.x - st.basketX) < BASKET_W / 2;
+        if (caughtY && inBasketX) {
+          if (it.good) setScore((s) => { const ns = s + 1; if (ns > bestScore) onNewBest(ns); return ns; });
+          else lostLives++;
+          return false;
+        }
+        if (it.y > H + 20) return false;
+        return true;
+      });
+
+      if (lostLives > 0) {
+        setLives((l) => {
+          const nl = Math.max(0, l - lostLives);
+          if (nl <= 0) { st.running = false; setGameOver(true); }
+          return nl;
+        });
+      }
+
+      drawGameBackground(ctx, W, H);
+      st.items.forEach((it) => {
+        ctx.beginPath(); ctx.fillStyle = it.color; ctx.arc(it.x, it.y, 12, 0, Math.PI * 2); ctx.fill();
+      });
+
+      ctx.fillStyle = '#F5F6FA';
+      const bx = st.basketX - BASKET_W / 2, by = BASKET_Y - BASKET_H / 2;
+      if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(bx, by, BASKET_W, BASKET_H, 8); ctx.fill(); }
+      else { ctx.fillRect(bx, by, BASKET_W, BASKET_H); }
+
+      raf = requestAnimationFrame(loop);
+    }
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  function movePointer(e) {
+    e.preventDefault();
+    const { x } = getCanvasPos(e, canvasRef.current);
+    stateRef.current.basketX = Math.max(BASKET_W / 2, Math.min(W - BASKET_W / 2, x));
+  }
+
+  function restart() {
+    stateRef.current = { items: [], lastSpawn: 0, elapsed: 0, running: true, basketX: W / 2 };
+    setScore(0); setLives(3); setGameOver(false);
+  }
+
+  return (
+    <div className="flex flex-col items-center w-full">
+      <div className="flex items-center justify-between w-full max-w-[320px] mb-3 text-sm">
+        <span className="font-mono text-[#F5F6FA]">Pontos: {score}</span>
+        <LifeDots lives={lives} />
+      </div>
+      <div className="relative rounded-2xl overflow-hidden border border-white/10 w-full" style={{ maxWidth: 320 }}>
+        <canvas ref={canvasRef} width={W} height={H} style={{ width: '100%', height: 'auto', touchAction: 'none', display: 'block' }}
+          onMouseMove={(e) => { if (e.buttons === 1) movePointer(e); }} onMouseDown={movePointer}
+          onTouchMove={movePointer} onTouchStart={movePointer} />
+        {gameOver && <GameOverOverlay label="Pontuação" score={score} isBest={score > bestScore} color="linear-gradient(135deg,#FB923C,#EF4444)" onRestart={restart} />}
+      </div>
+      <p className="text-[12px] text-[#5C6178] mt-2">Arrasta para mover o cesto — apanha o saudável, evita o resto.</p>
+      <button onClick={onExit} className="mt-3 text-sm text-[#5C6178] hover:text-[#9298AC]">← Voltar aos jogos</button>
+    </div>
+  );
+}
+
+function TimingGame({ onExit, bestScore, onNewBest }) {
+  const [pos, setPos] = useState(0);
+  const [reps, setReps] = useState(0);
+  const [lives, setLives] = useState(3);
+  const [gameOver, setGameOver] = useState(false);
+  const [flash, setFlash] = useState(null);
+  const stateRef = useRef({ t: 0, speed: 1.6, zoneWidth: 22, running: true });
+
+  useEffect(() => {
+    let raf, last = performance.now();
+    function loop(now) {
+      const dt = (now - last) / 1000;
+      last = now;
+      const st = stateRef.current;
+      if (st.running) {
+        st.t += dt * st.speed;
+        setPos((Math.sin(st.t) + 1) / 2 * 100);
+      }
+      raf = requestAnimationFrame(loop);
+    }
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  const zoneCenter = 50;
+
+  function handleTap() {
+    if (gameOver) return;
+    const st = stateRef.current;
+    const dist = Math.abs(pos - zoneCenter);
+    if (dist < st.zoneWidth / 2) {
+      setReps((r) => { const nr = r + 1; if (nr > bestScore) onNewBest(nr); return nr; });
+      setFlash('perfect');
+      st.speed = Math.min(st.speed + 0.15, 5);
+      st.zoneWidth = Math.max(10, st.zoneWidth - 0.6);
+    } else {
+      setFlash('miss');
+      setLives((l) => {
+        const nl = l - 1;
+        if (nl <= 0) { st.running = false; setGameOver(true); }
+        return nl;
+      });
+    }
+    setTimeout(() => setFlash(null), 220);
+  }
+
+  function restart() {
+    stateRef.current = { t: 0, speed: 1.6, zoneWidth: 22, running: true };
+    setReps(0); setLives(3); setGameOver(false); setPos(0);
+  }
+
+  return (
+    <div className="flex flex-col items-center w-full max-w-[320px]">
+      <div className="flex items-center justify-between w-full mb-4 text-sm">
+        <span className="font-mono text-[#F5F6FA]">Reps perfeitos: {reps}</span>
+        <LifeDots lives={lives} />
+      </div>
+
+      <div className="relative w-full h-10 bg-[#12141C] rounded-full border border-white/10 overflow-hidden mb-6">
+        <div className="absolute top-0 bottom-0 bg-emerald-500/25 border-x border-emerald-400/40"
+          style={{ left: `${zoneCenter - stateRef.current.zoneWidth / 2}%`, width: `${stateRef.current.zoneWidth}%` }} />
+        <div className="absolute top-0 bottom-0 w-1.5 bg-white rounded-full" style={{ left: `calc(${pos}% - 3px)` }} />
+      </div>
+
+      {flash && (
+        <p className={`font-display font-bold text-lg mb-2 ${flash === 'perfect' ? 'text-emerald-400' : 'text-red-400'}`}>
+          {flash === 'perfect' ? 'Rep perfeita!' : 'Falhaste!'}
+        </p>
+      )}
+
+      {!gameOver ? (
+        <button onClick={handleTap} className="w-full py-4 rounded-full font-semibold text-white text-lg"
+          style={{ background: 'linear-gradient(135deg,#4ADE80,#10B981)' }}>
+          Toca no momento certo
+        </button>
+      ) : (
+        <div className="flex flex-col items-center gap-3">
+          <p className="text-[#F5F6FA] font-display font-bold text-xl">Fim de jogo</p>
+          <p className="text-[#9298AC] text-sm">Reps perfeitos: {reps}{reps > bestScore ? ' · novo recorde!' : ''}</p>
+          <button onClick={restart} className="px-5 py-2 rounded-full text-sm font-semibold text-white" style={{ background: 'linear-gradient(135deg,#4ADE80,#10B981)' }}>
+            Jogar de novo
+          </button>
+        </div>
+      )}
+
+      <button onClick={onExit} className="mt-5 text-sm text-[#5C6178] hover:text-[#9298AC]">← Voltar aos jogos</button>
+    </div>
+  );
+}
+
+const GAME_DEFS = [
+  { key: 'catch', title: 'Apanha o Peso', desc: 'Toca nos pesos antes que caiam. Halteres, discos e kettlebells valem pontos diferentes.', icon: DumbbellIcon, from: '#3B82F6', to: '#A855F7' },
+  { key: 'basket', title: 'Fura-Calorias', desc: 'Arrasta o cesto e apanha o saudável — foge do resto.', icon: AppleIcon, from: '#FB923C', to: '#EF4444' },
+  { key: 'timing', title: 'Timing do Rep', desc: 'Toca no momento certo para uma rep perfeita. Fica mais rápido a cada acerto.', icon: ClockIcon, from: '#4ADE80', to: '#10B981' },
+];
+
+function GamesSheet({ onClose, bestScores, onNewBest }) {
+  const [activeGame, setActiveGame] = useState(null);
+  const activeDef = GAME_DEFS.find((g) => g.key === activeGame);
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-center">
+      <div className="absolute inset-0 bg-black/60 anim-fadein" onClick={onClose} />
+      <div className="anim-slideup relative w-full max-w-[480px] mt-auto bg-[#0D0F16] rounded-t-[28px] border-t border-white/10 flex flex-col max-h-[92vh]">
+
+        <div className="flex items-center justify-between px-5 pt-4 pb-2">
+          {activeGame ? (
+            <button onClick={() => setActiveGame(null)} aria-label="Voltar" className="w-9 h-9 flex items-center justify-center rounded-full text-[#9298AC] hover:bg-white/5">
+              <ChevronLeftIcon size={20} />
+            </button>
+          ) : <div className="w-9" />}
+          <h2 className="font-display font-bold text-lg text-[#F5F6FA]">{activeDef ? activeDef.title : 'Jogos'}</h2>
+          <button onClick={onClose} aria-label="Fechar" className="w-9 h-9 flex items-center justify-center rounded-full text-[#9298AC] hover:bg-white/5">
+            <CloseIcon size={18} />
+          </button>
+        </div>
+
+        <div className="px-5 pb-6 overflow-y-auto flex-1 flex flex-col items-center">
+          {!activeGame && (
+            <div className="w-full flex flex-col gap-3 mt-2">
+              {GAME_DEFS.map((g) => (
+                <button key={g.key} onClick={() => setActiveGame(g.key)}
+                  className="flex items-center gap-4 p-4 rounded-2xl border border-white/5 bg-[#12141C] text-left hover:border-white/10 transition-colors">
+                  <div className="rounded-2xl flex items-center justify-center text-white shrink-0"
+                    style={{ width: 52, height: 52, background: `linear-gradient(135deg, ${g.from}, ${g.to})` }}>
+                    <g.icon size={24} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-display font-semibold text-[#F5F6FA]">{g.title}</div>
+                    <div className="text-[12px] text-[#9298AC] mt-0.5 leading-snug">{g.desc}</div>
+                    <div className="text-[11px] text-[#5C6178] font-mono mt-1">Melhor: {bestScores[g.key] || 0}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {activeGame === 'catch' && <CatchGame onExit={() => setActiveGame(null)} bestScore={bestScores.catch || 0} onNewBest={(v) => onNewBest('catch', v)} />}
+          {activeGame === 'basket' && <BasketGame onExit={() => setActiveGame(null)} bestScore={bestScores.basket || 0} onNewBest={(v) => onNewBest('basket', v)} />}
+          {activeGame === 'timing' && <TimingGame onExit={() => setActiveGame(null)} bestScore={bestScores.timing || 0} onNewBest={(v) => onNewBest('timing', v)} />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Perfil (foto de avatar)                                            */
+/* ---------------------------------------------------------------- */
+
+function ProfileSheet({ avatarUrl, uploading, signedIn, onChangeAvatar, onRemoveAvatar, onSignOut, onClose }) {
+  const fileRef = useRef(null);
+  return (
+    <div className="fixed inset-0 z-50 flex justify-center">
+      <div className="absolute inset-0 bg-black/60 anim-fadein" onClick={onClose} />
+      <div className="anim-slideup relative w-full max-w-[480px] mt-auto bg-[#0D0F16] rounded-t-[28px] border-t border-white/10 flex flex-col">
+        <div className="flex items-center justify-between px-5 pt-4 pb-2">
+          <div className="w-9" />
+          <h2 className="font-display font-bold text-lg text-[#F5F6FA]">Perfil</h2>
+          <button onClick={onClose} aria-label="Fechar" className="w-9 h-9 flex items-center justify-center rounded-full text-[#9298AC] hover:bg-white/5">
+            <CloseIcon size={18} />
+          </button>
+        </div>
+
+        <div className="px-5 pb-8 pt-3 flex flex-col items-center gap-5">
+          <div className="w-24 h-24 rounded-full overflow-hidden bg-[#12141C] border border-white/10 flex items-center justify-center text-[#5C6178]">
+            {avatarUrl ? <img src={avatarUrl} alt="Foto de perfil" className="w-full h-full object-cover" /> : <UserIcon size={40} />}
+          </div>
+
+          <input ref={fileRef} type="file" accept="image/*" className="hidden"
+            onChange={(e) => { if (e.target.files[0]) onChangeAvatar(e.target.files[0]); e.target.value = ''; }} />
+
+          <div className="flex gap-3 w-full">
+            <button onClick={() => fileRef.current.click()} disabled={uploading}
+              className="flex-1 py-3 rounded-full font-medium text-sm text-white disabled:opacity-50 transition-opacity"
+              style={{ background: 'linear-gradient(135deg,#3B82F6,#A855F7)' }}>
+              {uploading ? 'A carregar…' : avatarUrl ? 'Mudar foto' : 'Adicionar foto'}
+            </button>
+            {avatarUrl && (
+              <button onClick={onRemoveAvatar} className="px-4 py-3 rounded-full text-sm font-medium text-[#9298AC] border border-white/10">
+                Remover
+              </button>
+            )}
+          </div>
+
+          {signedIn ? (
+            <button onClick={onSignOut}
+              className="w-full py-3 rounded-full text-sm font-medium text-red-400 border border-red-400/20 flex items-center justify-center gap-2">
+              <LogOutIcon size={15} /> Terminar sessão
+            </button>
+          ) : (
+            supabaseConfigured && <p className="text-[12px] text-[#5C6178] text-center">Modo local — a foto fica guardada só neste aparelho.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Root App                                                           */
+/* ---------------------------------------------------------------- */
+
+function App() {
+  const [session, setSession] = useState(null);
+  const [authReady, setAuthReady] = useState(!supabaseConfigured);
+  const [guestMode, setGuestMode] = useState(() => !supabaseConfigured || !!loadLocal(GUEST_KEY));
+  const [dataReady, setDataReady] = useState(false);
+
+  const [workouts, setWorkouts] = useState([]);
+  const [calories, setCalories] = useState([]);
+  const [supplements, setSupplements] = useState([]);
+
+  const [view, setView] = useState('dashboard');
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+
+  const [installEvent, setInstallEvent] = useState(null);
+  const [gamesOpen, setGamesOpen] = useState(false);
+  const [bestScores, setBestScores] = useState(() => loadLocal('fittrack_game_scores_v1') || {});
+
+  function handleNewBest(key, value) {
+    setBestScores((prev) => {
+      const next = { ...prev, [key]: value };
+      persistLocal('fittrack_game_scores_v1', next);
+      return next;
+    });
+  }
+  const [installDismissed, setInstallDismissed] = useState(() => !!loadLocal('fittrack_install_dismissed_v1'));
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+  const showInstallBanner = !isStandalone && !installDismissed && (installEvent || isIOS);
+
+  const signedIn = !!(supabaseConfigured && session);
+  const userId = signedIn ? session.user.id : null;
+  const showAuth = supabaseConfigured && authReady && !session && !guestMode;
+
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [avatarUrl, setAvatarUrl] = useState(null);
+  const [avatarUploading, setAvatarUploading] = useState(false);
+
+  useEffect(() => {
+    if (signedIn) setAvatarUrl(session.user.user_metadata?.avatar_url || null);
+    else setAvatarUrl(loadLocal('fittrack_avatar_v1'));
+  }, [signedIn, userId]);
+
+  async function handleChangeAvatar(file) {
+    setAvatarUploading(true);
+    try {
+      const dataUrl = await resizeImageFile(file, 320, 0.85);
+      if (signedIn) {
+        const { ok, url } = await dbUploadImage('avatars', `${userId}/avatar.jpg`, dataUrl);
+        if (ok) {
+          await sb.auth.updateUser({ data: { avatar_url: url } });
+          setAvatarUrl(url);
+          showToast('Foto de perfil atualizada');
+        } else {
+          showToast('Não foi possível enviar a foto.');
+        }
+      } else {
+        persistLocal('fittrack_avatar_v1', dataUrl);
+        setAvatarUrl(dataUrl);
+        showToast('Foto de perfil atualizada');
+      }
+    } catch (e) {
+      showToast('Não foi possível processar essa imagem.');
+    }
+    setAvatarUploading(false);
+  }
+
+  async function handleRemoveAvatar() {
+    if (signedIn) await sb.auth.updateUser({ data: { avatar_url: null } });
+    else persistLocal('fittrack_avatar_v1', null);
+    setAvatarUrl(null);
+    showToast('Foto removida');
+  }
+
+  useEffect(() => {
+    function handler(e) { e.preventDefault(); setInstallEvent(e); }
+    window.addEventListener('beforeinstallprompt', handler);
+    return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, []);
+
+  async function handleInstallClick() {
+    if (!installEvent) return;
+    installEvent.prompt();
+    await installEvent.userChoice;
+    setInstallEvent(null);
+  }
+
+  function dismissInstallBanner() {
+    setInstallDismissed(true);
+    persistLocal('fittrack_install_dismissed_v1', true);
+  }
+
+  useEffect(() => {
+    if (!supabaseConfigured) return;
+    let mounted = true;
+    sb.auth.getSession().then(({ data }) => { if (mounted) { setSession(data.session || null); setAuthReady(true); } });
+    const { data: sub } = sb.auth.onAuthStateChange((_event, sess) => setSession(sess));
+    return () => { mounted = false; sub.subscription.unsubscribe(); };
+  }, []);
+
+  useEffect(() => {
+    if (!authReady || showAuth) return;
+    let cancelled = false;
+    (async () => {
+      if (signedIn) {
+        const [wRes, cRes, sRes] = await Promise.all([
+          dbSelectAll('workouts', userId),
+          dbSelectAll('calorie_entries', userId),
+          dbSelectAll('supplement_entries', userId),
+        ]);
+        if (cancelled) return;
+        setWorkouts(wRes.ok ? wRes.data.map(rowToWorkout) : (loadLocal(STORAGE_KEY) || []));
+        setCalories(cRes.ok ? cRes.data.map(rowToCalorie) : (loadLocal(CALORIE_KEY) || []));
+        setSupplements(sRes.ok ? sRes.data.map(rowToSupplement) : (loadLocal(SUPPLEMENT_KEY) || []));
+        if (!wRes.ok || !cRes.ok || !sRes.ok) showToast('Sem ligação — a mostrar dados guardados neste aparelho.');
+      } else {
+        setWorkouts(loadLocal(STORAGE_KEY) || seedWorkouts());
+        setCalories(loadLocal(CALORIE_KEY) || []);
+        setSupplements(loadLocal(SUPPLEMENT_KEY) || []);
+      }
+      if (!cancelled) setDataReady(true);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line
+  }, [authReady, showAuth, signedIn, userId]);
+
+  useEffect(() => { if (dataReady) persistLocal(STORAGE_KEY, workouts); }, [workouts, dataReady]);
+  useEffect(() => { if (dataReady) persistLocal(CALORIE_KEY, calories); }, [calories, dataReady]);
+  useEffect(() => { if (dataReady) persistLocal(SUPPLEMENT_KEY, supplements); }, [supplements, dataReady]);
+
+  const sortedWorkouts = useMemo(() => [...workouts].sort((a, b) => new Date(b.date) - new Date(a.date)), [workouts]);
+  const sortedCalories = useMemo(() => [...calories].sort((a, b) => new Date(b.date) - new Date(a.date)), [calories]);
+  const sortedSupplements = useMemo(() => [...supplements].sort((a, b) => new Date(b.date) - new Date(a.date)), [supplements]);
+
+  function showToast(message, undo) {
+    clearTimeout(toastTimer.current);
+    setToast({ message, undo });
+    toastTimer.current = setTimeout(() => setToast(null), 4000);
+  }
+
+  async function handleSaveWorkout(workout) {
+    setWorkouts((prev) => [workout, ...prev]);
+    setSheetOpen(false);
+    showToast('Treino guardado');
+    if (signedIn) {
+      let photoUrl = workout.photo;
+      if (workout.photo) {
+        const res = await dbUploadImage('progress-photos', `${userId}/${workout.id}.jpg`, workout.photo);
+        if (res.ok) photoUrl = res.url;
+      }
+      const { ok } = await dbInsert('workouts', workoutToRow({ ...workout, photo: photoUrl }, userId));
+      if (photoUrl !== workout.photo) {
+        setWorkouts((prev) => prev.map((w) => (w.id === workout.id ? { ...w, photo: photoUrl } : w)));
+      }
+      if (!ok) showToast('Guardado neste aparelho — falha ao sincronizar.');
+    }
+  }
+
+  async function handleDeleteWorkout(id) {
+    const removed = workouts.find((w) => w.id === id);
+    setWorkouts((prev) => prev.filter((w) => w.id !== id));
+    showToast('Treino removido', async () => {
+      setWorkouts((prev) => [removed, ...prev]);
+      if (signedIn) await dbInsert('workouts', workoutToRow(removed, userId));
+    });
+    if (signedIn) await dbDelete('workouts', id);
+  }
+
+  async function handleAddCalorie(entry) {
+    setCalories((prev) => [entry, ...prev]);
+    showToast(`${entry.food} registado`);
+    if (signedIn) {
+      const { ok } = await dbInsert('calorie_entries', calorieToRow(entry, userId));
+      if (!ok) showToast('Guardado neste aparelho — falha ao sincronizar.');
+    }
+  }
+
+  async function handleDeleteCalorie(id) {
+    const removed = calories.find((c) => c.id === id);
+    setCalories((prev) => prev.filter((c) => c.id !== id));
+    showToast('Registo removido', async () => {
+      setCalories((prev) => [removed, ...prev]);
+      if (signedIn) await dbInsert('calorie_entries', calorieToRow(removed, userId));
+    });
+    if (signedIn) await dbDelete('calorie_entries', id);
+  }
+
+  async function handleLogSupplement(type) {
+    const entry = { id: uid(), type, date: new Date().toISOString() };
+    setSupplements((prev) => [entry, ...prev]);
+    showToast(`${type === 'creatina' ? 'Creatina' : 'Proteína'} registada às ${formatTime(entry.date)}`);
+    if (signedIn) {
+      const { ok } = await dbInsert('supplement_entries', supplementToRow(entry, userId));
+      if (!ok) showToast('Guardado neste aparelho — falha ao sincronizar.');
+    }
+  }
+
+  async function handleDeleteSupplement(id) {
+    const removed = supplements.find((s) => s.id === id);
+    setSupplements((prev) => prev.filter((s) => s.id !== id));
+    showToast('Registo removido', async () => {
+      setSupplements((prev) => [removed, ...prev]);
+      if (signedIn) await dbInsert('supplement_entries', supplementToRow(removed, userId));
+    });
+    if (signedIn) await dbDelete('supplement_entries', id);
+  }
+
+  async function handleSignOut() {
+    await sb.auth.signOut();
+    setGuestMode(false);
+    persistLocal(GUEST_KEY, false);
+    setDataReady(false);
+  }
+
+  function handleGuest() {
+    setGuestMode(true);
+    persistLocal(GUEST_KEY, true);
+  }
+
+  const streak = computeStreak(workouts);
+
+  if (supabaseConfigured && !authReady) return <SplashLoader />;
+  if (showAuth) return <AuthScreen onGuest={handleGuest} />;
+  if (!dataReady) return <SplashLoader />;
+
+  return (
+    <div className="min-h-screen flex justify-center">
+      <div className="w-full max-w-[480px] min-h-screen bg-[#05060A] relative flex flex-col">
+
+        <header className="sticky top-0 z-30 backdrop-blur-md bg-[#05060A]/85 border-b border-white/5 px-5 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-xl flex items-center justify-center font-display font-black text-sm text-white"
+              style={{ background: 'linear-gradient(135deg,#3B82F6,#A855F7)' }}>F</div>
+            <span className="font-display font-bold text-lg tracking-tight text-[#F5F6FA]">FitTrack</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {streak > 0 && (
+              <div className="flex items-center gap-1.5 bg-white/5 px-3 py-1.5 rounded-full text-sm text-orange-300">
+                <FlameIcon size={15} /><span className="font-mono font-semibold">{streak}</span>
+              </div>
+            )}
+            <button onClick={() => setProfileOpen(true)} aria-label="Perfil"
+              className="w-8 h-8 rounded-full overflow-hidden bg-white/5 border border-white/10 flex items-center justify-center text-[#9298AC]">
+              {avatarUrl ? <img src={avatarUrl} alt="" className="w-full h-full object-cover" /> : <UserIcon size={15} />}
+            </button>
+          </div>
+        </header>
+
+        {showInstallBanner && (
+          <InstallBanner platform={isIOS ? 'ios' : 'android'} onInstall={handleInstallClick} onDismiss={dismissInstallBanner} />
+        )}
+
+        <main className="flex-1 pb-28">
+          {view === 'dashboard' && (
+            <Dashboard workouts={sortedWorkouts} calories={sortedCalories} supplements={sortedSupplements}
+              setView={setView} onDelete={handleDeleteWorkout} onAdd={() => setSheetOpen(true)} onLogSupplement={handleLogSupplement}
+              onOpenGames={() => setGamesOpen(true)} />
+          )}
+          {view === 'nutrition' && (
+            <NutritionView calories={sortedCalories} supplements={sortedSupplements}
+              onAddCalorie={handleAddCalorie} onDeleteCalorie={handleDeleteCalorie}
+              onLogSupplement={handleLogSupplement} onDeleteSupplement={handleDeleteSupplement} />
+          )}
+          {view === 'history' && <HistoryView workouts={sortedWorkouts} onDelete={handleDeleteWorkout} />}
+        </main>
+
+        <BottomNav view={view} setView={setView} onAdd={() => setSheetOpen(true)} />
+        {sheetOpen && <AddWorkoutSheet onClose={() => setSheetOpen(false)} onSave={handleSaveWorkout} />}
+        {gamesOpen && <GamesSheet onClose={() => setGamesOpen(false)} bestScores={bestScores} onNewBest={handleNewBest} />}
+        {profileOpen && (
+          <ProfileSheet avatarUrl={avatarUrl} uploading={avatarUploading} signedIn={signedIn}
+            onChangeAvatar={handleChangeAvatar} onRemoveAvatar={handleRemoveAvatar}
+            onSignOut={() => { handleSignOut(); setProfileOpen(false); }} onClose={() => setProfileOpen(false)} />
+        )}
+        <Toast toast={toast} />
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+
+<script>
+  // Regista o service worker (permite instalar no telemóvel e funcionar offline).
+  // Só funciona quando a app é servida por HTTPS ou localhost — não em ficheiros abertos localmente.
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js').catch(() => { /* sem suporte ou sem HTTPS — ignora */ });
+    });
+  }
+</script>
+</body>
+</html>
