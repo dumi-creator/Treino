@@ -88,8 +88,8 @@ const { createPortal } = ReactDOM;
    5. Se deixares os campos vazios, a app continua a funcionar,
       mas os dados ficam guardados só neste aparelho/navegador.
    ------------------------------------------------------------------ */
-const SUPABASE_URL = '';
-const SUPABASE_ANON_KEY = '';
+const SUPABASE_URL = 'https://toxdwndcxfngauoosbgq.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_eq8Sow42s9OUpPkSFmlixA_zD_3VYaU';
 
 const supabaseConfigured = /^https?:\/\//.test(SUPABASE_URL) && SUPABASE_ANON_KEY.length > 20;
 const sb = supabaseConfigured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
